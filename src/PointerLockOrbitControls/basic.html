@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="../reset.css" />
+    <style>
+      canvas {
+        filter: blur(5px);
+      }
+      canvas.lock {
+        filter: none;
+      }
+      .mask {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+      span {
+        position: absolute;
+        top: 40%;
+        left: 47%;
+        font-size: 30px;
+        padding: 10px 15px;
+        border: 2px solid #fff;
+        border-radius: 5px;
+        cursor: pointer;
+        color: #fff;
+        z-index: 1000;
+      }
+      span.lock {
+        display: none;
+      }
+    </style>
+    <title>指针锁定轨道控制器 - 基础使用</title>
+  </head>
+  <body>
+    <span>开始</span>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { PointerLockOrbitControls } from "three-angle-motion";
+
+      let camera, scene, renderer, axesHelper, controls;
+      let isLock = false;
+
+      init();
+
+      function init() {
+        // 初始化场景
+        scene = new THREE.Scene();
+
+        // 初始化相机
+        camera = new THREE.PerspectiveCamera(75, document.body.offsetWidth / document.body.offsetHeight, 0.001, 10000);
+        camera.position.set(5, 10, 15);
+        camera.lookAt(scene.position);
+
+        // 相机添加到场景中
+        scene.add(camera);
+
+        let boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+        let boxMaterial = new THREE.MeshNormalMaterial();
+        let box = new THREE.Mesh(boxGeometry, boxMaterial);
+        scene.add(box);
+
+        axesHelper = new THREE.AxesHelper(25);
+        scene.add(axesHelper);
+
+        // 渲染器挂载到DOM上  renderDom
+        renderer = new THREE.WebGLRenderer({
+          // 抗锯齿
+          antialias: true,
+          // 是否使用对数深度缓存
+          logarithmicDepthBuffer: true,
+        });
+        renderer.setSize(document.body.offsetWidth, document.body.offsetHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.setAnimationLoop(animate);
+        document.body.appendChild(renderer.domElement);
+
+        // 控制器
+        controls = new PointerLockOrbitControls(camera, renderer.domElement, box.position);
+
+        // 事件
+        document.querySelector("span").onclick = () => {
+          document.querySelector("span").classList.add("lock");
+          renderer.domElement.classList.add("lock");
+
+          controls.lock();
+        };
+      }
+      let is = true;
+      function animate() {
+        renderer.render(scene, camera);
+
+        if (controls.isLocked && is) {
+          // is = false;
+          // console.log(controls.update);
+          controls.update();
+        }
+      }
+    </script>
+  </body>
+</html>

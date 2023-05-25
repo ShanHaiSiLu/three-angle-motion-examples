@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>打点测距</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="btn">点击</div>
+    <script type="module">
+      import { DistenceLine } from "three-angle-motion";
+      console.log(DistenceLine);
+
+      let infoList = import.meta.globEager("./src/**/*.html");
+      console.log(infoList);
+      
+      for (let mod in infoList) {
+        console.log(mod);
+        let iframe = document.createElement("iframe");
+        iframe.src = infoList[mod].default;
+        iframe.style.width = "800px";
+        iframe.style.height = "100px";
+        document.querySelector("#app").appendChild(iframe);
+      }
+    </script>
+  </body>
+</html>
