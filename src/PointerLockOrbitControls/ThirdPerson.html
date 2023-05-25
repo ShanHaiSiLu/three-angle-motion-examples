@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="../reset.css" />
+    <style>
+      canvas {
+        filter: blur(5px);
+      }
+      canvas.lock {
+        filter: none;
+      }
+      .mask {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+      span {
+        position: absolute;
+        top: 40%;
+        left: 47%;
+        font-size: 30px;
+        padding: 10px 15px;
+        border: 2px solid #fff;
+        border-radius: 5px;
+        cursor: pointer;
+        color: #fff;
+        z-index: 1000;
+      }
+      span.lock {
+        display: none;
+      }
+    </style>
+    <title>指针锁定轨道控制器 - 进阶用法：实现一个第三人称操作</title>
+  </head>
+  <body>
+    <span>开始</span>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+
+      import { Octree } from "three/examples/jsm/math/Octree.js";
+      import { OctreeHelper } from "three/examples/jsm/helpers/OctreeHelper.js";
+
+      import { Capsule } from "three/examples/jsm/math/Capsule.js";
+
+      import gsap from "gsap";
+
+      import { PointerLockOrbitControls } from "three-angle-motion";
+
+      let camera, scene, renderer, axesHelper;
+      let pointerOrbitController;
+      let clock = new THREE.Clock();
+
+      // 场景模型
+      let dungeon;
+
+      /**
+       * @动画相关变量
+       */
+      let player, // 角色模型
+        mixer, // 模型动画混合器
+        actions = []; // 可用动画动作
+
+      // 上一个动作，新动作（切换到的动作）
+      let prevAction, currentAction;
+
+      // 键盘指向
+      let keyAnimationDirection = new THREE.Vector3();
+      // 摄像机指向（动画用）
+      let animationCameraDirection = new THREE.Vector3();
+      // 角色指向
+      let playerAnimationDirection = new THREE.Vector3();
+
+      // 标记：修改角色指向的动画
+      let editPlayerDirectionTag;
+
+      // 键盘监测
+      let keyAnimationStates = {},
+        // 因为键盘的按下事件会持续触发，所以使用此对象作为对比
+        keyStatesAnimation = {};
+      let keyAnimations = ["KeyW", "KeyS", "KeyA", "KeyD"];
+
+      // 动画动作淡入淡出的动作时长
+      let switchSpeed = 0.2;
+
+      // 按下键盘后模型旋转的动作时长
+      let animationDuration = 0.2;
+
+      // 以player模型为中心，模型的朝向
+      let meshDirection = new THREE.Vector3();
+
+      // 是否正在动画转向
+      let isAnimationTurnTo = false;
+
+      /**
+       * @运动碰撞相关变量
+       */
+      // 八叉树世界
+      const worldOctree = new Octree();
+
+      // 表示用户的胶囊体
+      const playerCollider = new Capsule(new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(0, 1, 0), 0.3);
+      const GRAVITY = 30;
+      // 胶囊体形状
+      const geometry = new THREE.CapsuleGeometry(0.3, 0.5);
+      const material = new THREE.MeshLambertMaterial({
+        color: 0xffff00,
+        wireframe: true,
+      });
+      const playerCapsule = new THREE.Mesh(geometry, material);
+      playerCapsule.visible = false;
+
+      // 每一帧更新多少次世界
+      const STEPS_PER_FRAME = 15;
+
+      // 速度向量
+      const playerVelocity = new THREE.Vector3();
+      // 方向向量
+      const playerDirection = new THREE.Vector3();
+
+      let playerOnFloor = false;
+
+      const keyMovementStates = {};
+
+      // 模型的朝向目标
+      let lookatMesh = new THREE.Mesh(new THREE.SphereGeometry(0.1), new THREE.MeshStandardMaterial({ color: 0x0ff }));
+
+      init();
+
+      function init() {
+        // 初始化场景
+        scene = new THREE.Scene();
+
+        // 初始化相机
+        camera = new THREE.PerspectiveCamera(75, document.body.offsetWidth / document.body.offsetHeight, 0.001, 10000);
+        camera.position.set(5, 10, 15);
+        camera.lookAt(scene.position);
+
+        // 相机添加到场景中
+        scene.add(camera);
+
+        let boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+        let boxMaterial = new THREE.MeshNormalMaterial();
+        let box = new THREE.Mesh(boxGeometry, boxMaterial);
+        scene.add(box);
+
+        axesHelper = new THREE.AxesHelper(25);
+        scene.add(axesHelper);
+
+        // 渲染器挂载到DOM上  renderDom
+        renderer = new THREE.WebGLRenderer({
+          // 抗锯齿
+          antialias: true,
+          // 是否使用对数深度缓存
+          logarithmicDepthBuffer: true,
+        });
+        renderer.setSize(document.body.offsetWidth, document.body.offsetHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.setAnimationLoop(animate);
+        document.body.appendChild(renderer.domElement);
+
+        // 添加灯光
+        // 环境光
+        const amblight = new THREE.AmbientLight(0x404040);
+        scene.add(amblight);
+        // 平行光
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        scene.add(directionalLight);
+        const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight2.position.set(0, -1, 3);
+        scene.add(directionalLight2);
+
+        // 事件
+        document.querySelector("span").onclick = () => {
+          pointerOrbitController.lock();
+        };
+
+        window.addEventListener("resize", function () {
+          // 更新摄像头
+          camera.aspect = renderDom.offsetWidth / renderDom.offsetHeight;
+          // 更新摄像机投影矩阵
+          camera.updateProjectionMatrix();
+
+          // 更新渲染器
+          renderer.setSize(renderDom.offsetWidth, renderDom.offsetHeight);
+          // 更新渲染器像素比
+          renderer.setPixelRatio(window.devicePixelRatio);
+        });
+
+        // 初始化第三人称控制器
+        initPointerLockOrbit();
+
+        // 添加事件监听——模型动画变动和模型位置变动
+        addEventsListenter();
+
+        // 加载环境模型
+        loadScene();
+
+        // 加载人物模型
+        loadPlayer();
+      }
+
+      // 帧动画
+      function animate() {
+        renderer.render(scene, camera);
+
+        let deltaTimes = clock.getDelta();
+
+        // 动画已经加载则更新动画
+        mixer && mixer.update(deltaTimes);
+
+        // 更新角色位置
+        updateCapsulePosition(deltaTimes);
+
+        // 更新角色动画
+        updatePlayerAnimation();
+
+        // 跌落世界处理
+        teleportPlayerIfOob();
+
+        // // 相机穿模处理
+        // cameraPositionAmend();
+
+        if (pointerOrbitController.isLocked) {
+          pointerOrbitController.update();
+        }
+      }
+
+      // 初始化第三人称控制器
+      function initPointerLockOrbit() {
+        pointerOrbitController = new PointerLockOrbitControls(camera, renderer.domElement, playerCollider.end);
+
+        // 垂直角度限制
+        // pointerOrbitController.minPolarAngle = Math.PI / 4;
+        pointerOrbitController.maxPolarAngle = Math.PI / 2;
+
+        // 水平角度限制
+        // pointerOrbitController.minAzimuthAngle = Math.PI / 4;
+        // pointerOrbitController.maxAzimuthAngle = Math.PI;
+
+        // R限制
+        pointerOrbitController.minDistance = 1;
+        pointerOrbitController.maxDistance = 10;
+
+        // 事件
+        pointerOrbitController.addEventListener("lock", () => {
+          document.querySelector("span").classList.add("lock");
+          renderer.domElement.classList.add("lock");
+        });
+        pointerOrbitController.addEventListener("unlock", () => {
+          document.querySelector("span").classList.remove("lock");
+          renderer.domElement.classList.remove("lock");
+        });
+      }
+
+      // 监听键盘操作
+      function addEventsListenter() {
+        document.addEventListener("keydown", (event) => {
+          keyAnimationStates[event.code] = true;
+          keyMovementStates[event.code] = true;
+        });
+
+        document.addEventListener("keyup", (event) => {
+          keyAnimationStates[event.code] = false;
+          keyMovementStates[event.code] = false;
+        });
+      }
+
+      // 加载环境模型
+      function loadScene() {
+        new GLTFLoader().load("/model/dungeon.glb", (gltf) => {
+          dungeon = gltf.scene;
+          dungeon.position.y -= 3;
+
+          scene.add(dungeon);
+
+          worldOctree.fromGraphNode(dungeon);
+        });
+      }
+
+      // 加载人物模型
+      function loadPlayer() {
+        new GLTFLoader().load("/model/boxman.glb", (gltf) => {
+          // 场景中添加模型
+          player = gltf.scene;
+          player.scale.set(0.65, 0.65, 0.65);
+          scene.add(player);
+
+          // 获取模型自带动画
+          let allAnimation = gltf.animations;
+          mixer = new THREE.AnimationMixer(player);
+
+          // 三个动画：静止，奔跑，快速奔跑
+          actions.push(mixer.clipAction(allAnimation[0]));
+          actions.push(mixer.clipAction(allAnimation[15]));
+          actions.push(mixer.clipAction(allAnimation[6]));
+
+          // 默认执行站立动画
+          currentAction = actions[0];
+          currentAction.play();
+        });
+      }
+
+      /**
+       * @模拟物理操作，更新角色位置
+       */
+      function updateCapsulePosition() {
+        if (dungeon)
+          updateCapsulePosition = (deltaTimes) => {
+            const deltaTime = Math.min(0.05, deltaTimes) / STEPS_PER_FRAME;
+
+            for (let i = 0; i < STEPS_PER_FRAME; i++) {
+              updateControlsForKey(deltaTime);
+
+              updatePlayer(deltaTime);
+            }
+          };
+      }
+
+      // 得到向前向量
+      function getForwardVector() {
+        camera.getWorldDirection(playerDirection);
+        playerDirection.y = 0;
+        playerDirection.normalize();
+
+        return playerDirection;
+      }
+
+      // 得到侧向向量
+      function getSideVector() {
+        camera.getWorldDirection(playerDirection);
+        playerDirection.y = 0;
+        playerDirection.normalize();
+        playerDirection.cross(camera.up);
+
+        return playerDirection;
+      }
+
+      function updateControlsForKey(deltaTime) {
+        const speedDelta = deltaTime * (playerOnFloor ? 25 : 8);
+
+        if (keyMovementStates["KeyW"]) {
+          playerVelocity.add(getForwardVector().multiplyScalar(speedDelta));
+        }
+
+        if (keyMovementStates["KeyS"]) {
+          playerVelocity.add(getForwardVector().multiplyScalar(-speedDelta));
+        }
+
+        if (keyMovementStates["KeyA"]) {
+          playerVelocity.add(getSideVector().multiplyScalar(-speedDelta));
+        }
+
+        if (keyMovementStates["KeyD"]) {
+          playerVelocity.add(getSideVector().multiplyScalar(speedDelta));
+        }
+
+        if (playerOnFloor) {
+          if (keyMovementStates["Space"]) {
+            playerVelocity.y = 15;
+          }
+        }
+      }
+
+      // 更新摄像机位置
+      function updatePlayer(deltaTime) {
+        // 阻尼
+        let damping = Math.exp(-4 * deltaTime) - 1;
+
+        if (!playerOnFloor) {
+          playerVelocity.y -= GRAVITY * deltaTime;
+
+          // small air resistance
+          damping *= 0.1;
+        }
+
+        playerVelocity.addScaledVector(playerVelocity, damping * 10);
+
+        const deltaPosition = playerVelocity
+          .clone()
+          .multiplyScalar(deltaTime * (keyMovementStates["ShiftLeft"] ? 7 : 5));
+        playerCollider.translate(deltaPosition);
+
+        playerCollisions();
+
+        playerCapsule.position.lerpVectors(playerCollider.end, playerCollider.start, 0.5);
+        player.position.copy(playerCollider.start);
+        player.position.y -= 0.3;
+      }
+
+      // 角色碰撞检测
+      function playerCollisions() {
+        const result = worldOctree.capsuleIntersect(playerCollider);
+
+        playerOnFloor = false;
+
+        if (result) {
+          playerOnFloor = result.normal.y > 0;
+
+          if (!playerOnFloor) {
+            playerVelocity.addScaledVector(result.normal, -result.normal.dot(playerVelocity));
+          }
+
+          playerCollider.translate(result.normal.multiplyScalar(result.depth));
+        }
+      }
+
+      // 跌落世界处理
+      function teleportPlayerIfOob() {
+        if (player)
+          teleportPlayerIfOob = () => {
+            if (player.position.y <= -25) {
+              playerCollider.start.set(0, 0.5, 0);
+              playerCollider.end.set(0, 1, 0);
+
+              camera.position.copy(playerCollider.end);
+              camera.position.y += 3;
+              camera.rotation.set(0, 0, 0);
+            }
+          };
+      }
+
+      /**
+       *
+       * @切换动画相关方法
+       */
+
+      // 切换动画
+      function changeAction(num) {
+        // 如果新动画和当前动画一致，则无动作
+        if (actions[num] === currentAction) return;
+        // 保存旧动画，确定新动画
+        prevAction = currentAction;
+        currentAction = actions[num];
+
+        // 旧动画淡出
+        prevAction.fadeOut(switchSpeed);
+
+        // 新动作淡入
+        currentAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(switchSpeed).play();
+      }
+
+      // 更新角色动画
+      function updatePlayerAnimation() {
+        if (player)
+          updatePlayerAnimation = () => {
+            // 更新模型动作
+            if (
+              keyAnimationStates["KeyW"] ||
+              keyAnimationStates["KeyS"] ||
+              keyAnimationStates["KeyA"] ||
+              keyAnimationStates["KeyD"]
+            ) {
+              if (keyAnimationStates["ShiftLeft"]) changeAction(2);
+              else changeAction(1);
+            } else {
+              return changeAction(0);
+            }
+
+            let to = updatePlayerAnimationDirection();
+
+            updatePlayerDirectionAnimation(to);
+          };
+      }
+    </script>
+  </body>
+</html>

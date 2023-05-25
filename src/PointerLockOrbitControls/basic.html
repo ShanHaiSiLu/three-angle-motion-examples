@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
@@ -45,7 +45,6 @@
       import { PointerLockOrbitControls } from "three-angle-motion";
 
       let camera, scene, renderer, axesHelper, controls;
-      let isLock = false;
 
       init();
 
@@ -83,22 +82,37 @@
 
         // 控制器
         controls = new PointerLockOrbitControls(camera, renderer.domElement, box.position);
+        controls.addEventListener("lock", () => {
+          document.querySelector("span").classList.add("lock");
+          renderer.domElement.classList.add("lock");
+        });
+        controls.addEventListener("unlock", () => {
+          document.querySelector("span").classList.remove("lock");
+          renderer.domElement.classList.remove("lock");
+        });
 
         // 事件
         document.querySelector("span").onclick = () => {
-          document.querySelector("span").classList.add("lock");
-          renderer.domElement.classList.add("lock");
-
           controls.lock();
         };
+
+        window.addEventListener("resize", function () {
+          // 更新摄像头
+          camera.aspect = renderDom.offsetWidth / renderDom.offsetHeight;
+          // 更新摄像机投影矩阵
+          camera.updateProjectionMatrix();
+
+          // 更新渲染器
+          renderer.setSize(renderDom.offsetWidth, renderDom.offsetHeight);
+          // 更新渲染器像素比
+          renderer.setPixelRatio(window.devicePixelRatio);
+        });
       }
-      let is = true;
+
       function animate() {
         renderer.render(scene, camera);
 
-        if (controls.isLocked && is) {
-          // is = false;
-          // console.log(controls.update);
+        if (controls.isLocked) {
           controls.update();
         }
       }
