@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="../reset.css" />
     <style>
       canvas {
-        filter: blur(5px);
+        /* filter: blur(5px); */
       }
       canvas.lock {
         filter: none;
@@ -104,16 +104,21 @@
       // 八叉树世界
       const worldOctree = new Octree();
 
-      // 表示用户的胶囊体
-      const playerCollider = new Capsule(new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(0, 1, 0), 0.3);
+      const personColliderStart = new THREE.Vector3(8, 6, 6),
+        personColliderEnd = new THREE.Vector3(8, 6.5, 6),
+        personColliderRadius = 0.3;
+      // 逻辑胶囊体（碰撞体）
+      const playerCollider = new Capsule(personColliderStart.clone(), personColliderEnd.clone(), personColliderRadius);
       const GRAVITY = 30;
-      // 胶囊体形状
-      const geometry = new THREE.CapsuleGeometry(0.3, 0.5);
-      const material = new THREE.MeshLambertMaterial({
-        color: 0xffff00,
-        wireframe: true,
-      });
-      const playerCapsule = new THREE.Mesh(geometry, material);
+
+      // 胶囊体mesh
+      const playerCapsule = new THREE.Mesh(
+        new THREE.CapsuleGeometry(personColliderRadius, personColliderEnd.y - personColliderStart.y),
+        new THREE.MeshLambertMaterial({
+          color: 0xffff00,
+          wireframe: true,
+        })
+      );
       playerCapsule.visible = false;
 
       // 每一帧更新多少次世界
@@ -139,7 +144,7 @@
 
         // 初始化相机
         camera = new THREE.PerspectiveCamera(75, document.body.offsetWidth / document.body.offsetHeight, 0.001, 10000);
-        camera.position.set(5, 10, 15);
+        // camera.position.set(5, 10, 15);
         camera.lookAt(scene.position);
 
         // 相机添加到场景中
@@ -176,10 +181,22 @@
         directionalLight2.position.set(0, -1, 3);
         scene.add(directionalLight2);
 
-        // 事件
+        // 点击事件
         document.querySelector("span").onclick = () => {
           pointerOrbitController.lock();
         };
+
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+
+        document.body.addEventListener("click", (e) => {
+          mouse.x = (e.offsetX / document.querySelector("canvas").offsetWidth) * 2 - 1;
+          mouse.y = -(e.offsetY / document.querySelector("canvas").offsetHeight) * 2 + 1;
+
+          raycaster.setFromCamera(mouse, camera);
+          let selectModel = raycaster.intersectObjects(dungeon.children, true);
+          console.log(selectModel);
+        });
 
         window.addEventListener("resize", function () {
           // 更新摄像头
@@ -276,7 +293,7 @@
       function loadScene() {
         new GLTFLoader().load("/model/dungeon.glb", (gltf) => {
           dungeon = gltf.scene;
-          dungeon.position.y -= 3;
+          dungeon.scale.set(2, 2, 2);
 
           scene.add(dungeon);
 
@@ -416,12 +433,11 @@
         if (player)
           teleportPlayerIfOob = () => {
             if (player.position.y <= -25) {
-              playerCollider.start.set(0, 0.5, 0);
-              playerCollider.end.set(0, 1, 0);
+              playerCollider.start.copy(personColliderStart);
+              playerCollider.end.copy(personColliderEnd);
 
-              camera.position.copy(playerCollider.end);
-              camera.position.y += 3;
-              camera.rotation.set(0, 0, 0);
+              playerVelocity.set(0, 0, 0);
+              playerDirection.set(0, 0, 0);
             }
           };
       }
@@ -450,6 +466,8 @@
       function updatePlayerAnimation() {
         if (player)
           updatePlayerAnimation = () => {
+            let num = 0;
+
             // 更新模型动作
             if (
               keyAnimationStates["KeyW"] ||
@@ -457,16 +475,140 @@
               keyAnimationStates["KeyA"] ||
               keyAnimationStates["KeyD"]
             ) {
-              if (keyAnimationStates["ShiftLeft"]) changeAction(2);
-              else changeAction(1);
-            } else {
-              return changeAction(0);
+              if (keyAnimationStates["ShiftLeft"]) num = 2;
+              else num = 1;
             }
 
-            let to = updatePlayerAnimationDirection();
+            // 更新键盘指向
+            keyAnimationDirection.x = Number(keyAnimationStates["KeyA"] || 0) - Number(keyAnimationStates["KeyD"] || 0);
+            keyAnimationDirection.z = Number(keyAnimationStates["KeyW"] || 0) - Number(keyAnimationStates["KeyS"] || 0);
+            changeAction(keyAnimationDirection.x === 0 && keyAnimationDirection.z === 0 ? 0 : num);
+            console.log(keyAnimationDirection);
 
-            updatePlayerDirectionAnimation(to);
+            updatePlayerAnimationDirection();
+
+            updatePlayerDirectionAnimation();
+
+            // 角色指向调整
+            updatePlayerLookat();
           };
+      }
+
+      // 更新目标方向
+      function updatePlayerAnimationDirection() {
+        // 获取摄像机的指向
+        camera.getWorldDirection(animationCameraDirection);
+
+        animationCameraDirection.y = 0;
+        animationCameraDirection.x *= keyAnimationDirection.z || 1;
+        animationCameraDirection.z *= keyAnimationDirection.z || 1;
+        animationCameraDirection.normalize();
+
+        let angle = keyAnimationStates["KeyW"] || keyAnimationStates["KeyS"] ? Math.PI / 4 : Math.PI / 2;
+
+        angle *= keyAnimationDirection.x || 1;
+        angle *= keyAnimationStates["KeyS"] ? -1 : 1;
+
+        if (keyAnimationStates["KeyA"] || keyAnimationStates["KeyD"]) {
+          animationCameraDirection.applyEuler(new THREE.Euler(0, angle, 0));
+        }
+
+        return animationCameraDirection.clone();
+      }
+
+      // 通过模型方向和按键变动判定是否需要动画
+      function updatePlayerDirectionAnimation() {
+        // 更新角色的Z轴正方向朝向，也就是模型朝向
+        player.getWorldDirection(playerAnimationDirection);
+
+        let from = playerAnimationDirection.clone().setY(0).normalize();
+        let duration = animationDuration;
+
+        let isInverse = new THREE.Vector3().addVectors(from, animationCameraDirection);
+
+        // 是否需要通过动画旋转模型的方向
+        let isAnimation = false;
+
+        keyAnimations.forEach((k) => {
+          if (keyStatesAnimation[k] !== keyAnimationStates[k]) {
+            isAnimation = true;
+            keyStatesAnimation[k] = keyAnimationStates[k];
+          }
+        });
+
+        /**
+         * 1、常规情况下仅键盘变动时触发动画，例如某个按键按下或抬起
+         * 2、如果触发动画时摄像机所视角度与模型Z轴正方向夹角过大，可能会产生模型的无动画转向问题，考虑解决方案如下：
+         此方案可能出现常规切换键盘按键时也被触发等问题
+        */
+
+        if (!isAnimation) {
+          // 正在动画转向则不处理
+          if (isAnimationTurnTo) return;
+
+          let angle = (from.angleTo(animationCameraDirection) * 180) / Math.PI;
+          // 这个角度设置的太小的话，很可能稍微旋转鼠标就触发了
+          // 但是也不能太大，否则很明显的角度瞬移也很刺眼
+          if (angle > 30) {
+            // W方向与模型Z轴方向角度差过大，需要一个迅速完成的动画
+            duration = 0.05;
+            // console.log("夹角：" + angle + "°，需要迅速反应的动画");
+          } else {
+            return meshDirection.copy(animationCameraDirection);
+          }
+        }
+
+        // 反向旋转需要分两段完成
+        if (isInverse.length() < 10 ** -5) {
+          // 目标方向与模型Z轴方向的向量和的欧几里得长度过小，判定为角度制180°旋转
+          let medianVec3 = animationCameraDirection.clone().applyEuler(new THREE.Euler(0, Math.PI / 2, 0));
+
+          return rotationAnimationPromise(from, medianVec3, duration / 2).then(() => {
+            rotationAnimationPromise(medianVec3, animationCameraDirection, duration / 2);
+          });
+        } else {
+          // 可以一次动画就完成的旋转
+          rotationAnimationPromise(from, animationCameraDirection, duration);
+        }
+      }
+
+      // Promise化的通过动画旋转模型
+      function rotationAnimationPromise(_from, _to, duration) {
+        return new Promise((res) => {
+          let from = _from.clone();
+          let to = _to.clone();
+          // 模型当前朝向（Z轴正方向）和目标方向之间进行插值计算时的差值因数
+          let params = {
+            alpha: 0,
+          };
+
+          // 新动画开始时直接将上一个动画的状态强制置位完成状态
+          if (editPlayerDirectionTag) editPlayerDirectionTag.kill();
+          isAnimationTurnTo = true;
+
+          editPlayerDirectionTag = gsap.to(params, {
+            alpha: 1,
+            ease: "none",
+            // overwrite: true,
+            duration,
+            onUpdate() {
+              // 保存当前方向和目标方向之间进行插值计算的计算结果的中间量
+              meshDirection.lerpVectors(from, to, params.alpha);
+            },
+            onComplete() {
+              isAnimationTurnTo = false;
+              res();
+            },
+          });
+        });
+      }
+
+      // 调整角色指向
+      function updatePlayerLookat() {
+        if (lookatMesh?.position && player?.position) {
+          lookatMesh.position.copy(player.position.clone().add(meshDirection));
+          player.lookAt(lookatMesh.position);
+        }
       }
     </script>
   </body>
